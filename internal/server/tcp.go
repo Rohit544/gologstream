@@ -101,6 +101,22 @@ func (s *TCPServer) handleConnection(conn net.Conn) {
 			_, _ = conn.Write([]byte("--- STREAM END ---\n"))
 			continue // Jump straight back to top of the loop to wait for next command
 		}
+				// 📊 NEW STAT PROTOCOL LAYER: Handle metadata queries
+		if messagePayload == "STAT" {
+			// 1. FETCH SIZE FROM STORAGE
+			size, err := s.wal.GetSize()
+			if err != nil {
+				log.Printf("❌ Failed to fetch log size stats: %v", err)
+				_, _ = conn.Write([]byte("ERROR: Internal storage stat failure\n"))
+				continue
+			}
+
+			// 2. FORMAT AND TRANSMIT OVER WIRE
+			responseMessage := fmt.Sprintf("INFO: Current log size is %d bytes\n", size)
+			_, _ = conn.Write([]byte(responseMessage))
+			continue // Jump straight back to the top of the loop to wait for the next command!
+		}
+
 
 		// 3. 💾 COMMIT TO DISK: (Only runs if the message wasn't EXIT or CONSUME)
 		offset, err := s.wal.Append([]byte(messagePayload))

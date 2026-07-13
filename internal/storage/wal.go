@@ -114,3 +114,20 @@ func (w *WAL) ReadFromOffset(startOffset int64) ([][]byte, error) {
 
 	return records, nil
 }
+// GetSize queries the operating system kernel for the exact current byte size of the WAL file
+func (w *WAL) GetSize() (int64, error) {
+	// 1. ACQUIRE LOCK: Protect file descriptor from race conditions if a write is happening
+	w.mu.Lock()
+	defer w.mu.Unlock() // 2. DEFER RELEASE LOCK: Will unlock automatically when this function finishes
+
+	// 3. CALL OS HARDWARE STATS: Ask the kernel for file metadata
+	stat, err := w.file.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("failed to read file metadata from kernel: %w", err)
+	}
+
+	// 4. RETURN PROPERTY: Return the exact byte count cleanly
+	return stat.Size(), nil
+}
+
+
