@@ -6,25 +6,29 @@ import (
 	"log"
 	"net"
 	"strings"
-
-	"github.com/Rohit544/gologstream/internal/storage"
 )
 
-// TCPServer handles incoming raw TCP network connections
-type TCPServer struct {
-	listenAddr string
-	wal        *storage.WAL
+// StorageEngine defines the boundary interface our server needs to talk to the WAL layer safely
+type StorageEngine interface {
+	Append(data []byte) (int64, error)
+	GetSize() (int64, error)
 }
 
-// NewTCPServer initializes our network daemon configuration
-func NewTCPServer(listenAddr string, wal *storage.WAL) *TCPServer {
+// TCPServer manages high-throughput concurrent socket channels
+type TCPServer struct {
+	listenAddr string
+	wal        StorageEngine
+}
+
+// NewTCPServer instantiates our bare-metal network engine wrapper
+func NewTCPServer(listenAddr string, wal StorageEngine) *TCPServer {
 	return &TCPServer{
 		listenAddr: listenAddr,
 		wal:        wal,
 	}
 }
 
-// Start boots the TCP socket listener and enters the high-concurrency accept loop
+// Start opens up the raw TCP port listening loops
 func (s *TCPServer) Start() error {
 	listener, err := net.Listen("tcp", s.listenAddr)
 	if err != nil {
@@ -32,18 +36,17 @@ func (s *TCPServer) Start() error {
 	}
 	defer listener.Close()
 
+	fmt.Println("🚀 Initializing GoLogStream Production Engine Node...")
 	fmt.Printf("📡 TCPServer accepting raw streaming connections on %s...\n", s.listenAddr)
 
 	for {
-		// Accept blocks until a new client (producer/consumer) hits the socket port
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Printf("❌ Failed to accept connection: %v", err)
+			log.Printf("⚠️ Network handshake drop: %v", err)
 			continue
 		}
 
-		// 🧵 Google-Scale Concurrency: Spin up a lightweight goroutine thread instantly
-		// to handle this specific client so the main loop can immediately accept the next user.
+		// Spin up an decoupled concurrency lane (Goroutine thread) for every single client
 		go s.handleConnection(conn)
 	}
 }
@@ -52,18 +55,15 @@ func (s *TCPServer) handleConnection(conn net.Conn) {
 	defer conn.Close()
 	log.Printf("👥 Client connected from remote address: %s", conn.RemoteAddr().String())
 
-	// Use an optimized buffered reader to stream incoming lines over the wire efficiently
 	reader := bufio.NewReader(conn)
 
 	for {
-		// Read string input up until a newline delimiter (\n)
 		line, err := reader.ReadString('\n')
 		if err != nil {
-			log.Printf("🔌 Client disconnected or connection broken: %s", conn.RemoteAddr().String())
+			log.Printf("🔌 Client disconnected: %s", conn.RemoteAddr().String())
 			return
 		}
 
-		// Clean up carriage returns (\r\n) from incoming terminal buffers
 		messagePayload := strings.TrimSpace(line)
 		if messagePayload == "" {
 			continue
@@ -75,31 +75,18 @@ func (s *TCPServer) handleConnection(conn net.Conn) {
 			return
 		}
 
-		// 2. 🔍 NEW CONSUME PROTOCOL LAYER: Handle historical playback streams
-		if strings.HasPrefix(messagePayload, "CONSUME ") {
-			var startOffset int64
-			// Parse the offset number out of the command string (e.g., "CONSUME 76")
-			_, err := fmt.Sscanf(messagePayload, "CONSUME %d", &startOffset)
+		// 2. 📊 STAT PROTOCOL LAYER: Handle metadata queries
+		if messagePayload == "STAT" {
+			size, err := s.wal.GetSize()
 			if err != nil {
-				_, _ = conn.Write([]byte("ERROR: Invalid consume syntax. Use 'CONSUME <offset>'\n"))
+				log.Printf("❌ Failed to fetch log size stats: %v", err)
+				_, _ = conn.Write([]byte("ERROR: Internal storage stat failure\n"))
 				continue
 			}
 
-			// Read records from the storage layer
-			records, err := s.wal.ReadFromOffset(startOffset)
-			if err != nil {
-				log.Printf("❌ Failed to read log from offset %d: %v", startOffset, err)
-				_, _ = conn.Write([]byte("ERROR: Internal read failure\n"))
-				continue
-			}
-
-			// Stream the recovered data payloads back down the bare-metal socket line
-			_, _ = conn.Write([]byte(fmt.Sprintf("--- STREAM START FROM OFFSET %d ---\n", startOffset)))
-			for _, record := range records {
-				_, _ = conn.Write([]byte(fmt.Sprintf("📖 %s\n", string(record))))
-			}
-			_, _ = conn.Write([]byte("--- STREAM END ---\n"))
-			continue // Jump straight back to top of the loop to wait for next command
+			responseMessage := fmt.Sprintf("INFO: Current segment active size is %d bytes\n", size)
+			_, _ = conn.Write([]byte(responseMessage))
+			continue
 		}
 				// 📊 NEW STAT PROTOCOL LAYER: Handle metadata queries
 		if messagePayload == "STAT" {
@@ -118,7 +105,13 @@ func (s *TCPServer) handleConnection(conn net.Conn) {
 		}
 
 
-		// 3. 💾 COMMIT TO DISK: (Only runs if the message wasn't EXIT or CONSUME)
+		// 3. 🔍 CONSUME LAYER PLACEHOLDER: (Temporarily paused during active rotation testing)
+		if strings.HasPrefix(messagePayload, "CONSUME ") {
+			_, _ = conn.Write([]byte("NOTICE: Consumer replay is updating for multi-segment files.\n"))
+			continue
+		}
+
+		// 4. 💾 COMMIT TO DISK: Segment-aware append operation
 		offset, err := s.wal.Append([]byte(messagePayload))
 		if err != nil {
 			log.Printf("❌ Critical WAL append failure: %v", err)
@@ -126,9 +119,7 @@ func (s *TCPServer) handleConnection(conn net.Conn) {
 			return
 		}
 
-		// Send an acknowledgement payload back to the client confirming data durability
-		ackMessage := fmt.Sprintf("ACK: Durable commit locked at disk offset %d\n", offset)
+		ackMessage := fmt.Sprintf("ACK: Durable commit locked at segment local offset %d\n", offset)
 		_, _ = conn.Write([]byte(ackMessage))
 	}
-
 }

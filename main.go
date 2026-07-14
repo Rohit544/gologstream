@@ -11,8 +11,8 @@ import (
 func main() {
 	fmt.Println("🚀 Initializing GoLogStream Production Engine Node...")
 
-	// 1. Mount the crash-resilient storage WAL layer
-	wal, err := storage.NewWAL("commit.log")
+	// Change "commit.log" to a directory name like "commit_logs"
+	wal, err := storage.NewWAL("commit_logs")
 	if err != nil {
 		log.Fatalf("❌ Critical Storage Initialization Failure: %v", err)
 	}
